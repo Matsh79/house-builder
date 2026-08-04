@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>House Builder</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="hud">
+    <button id="roofBtn">Open Roof</button>
+    <span class="hint">Drag a wall to pull it out. Drag to orbit, scroll to zoom.</span>
+  </div>
+
+  <div id="nametagPanel">
+    <input id="nameInput" type="text" placeholder="Character name..." maxlength="16">
+  </div>
+
+  <div id="labels"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
