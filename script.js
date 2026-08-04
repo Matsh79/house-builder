@@ -77,6 +77,7 @@ const windowMat = new THREE.MeshStandardMaterial({ color: 0x9fd3e8, transparent:
 const doorMat = new THREE.MeshStandardMaterial({ color: 0x5b3a29 });
 const trimMat = new THREE.MeshStandardMaterial({ color: 0x33261c, flatShading: true });
 const interiorMat = boardMat(panelTex, 3, 2.4, 0.5);
+const floorTex = makeStripeTexture("#c9a876", "#bd9963", 24); // horizontal-plank floor
 
 // Wood-siding materials, one per wall category so board width stays
 // consistent in meters even though each mesh has different UV extents.
@@ -233,6 +234,13 @@ const gableNorth = makeGableWall(LENGTH - WALL_T, 1);
 const wallWest = makeLongWall(0, -1);
 const wallEast = makeLongWall(DEPTH - WALL_T, 1);
 
+// ground-floor interior floor (otherwise the exterior grass shows straight
+// through the open walls/roof)
+const floorMat = boardMat(floorTex, LENGTH - 2 * WALL_T, DEPTH - 2 * WALL_T, 0.15);
+const groundFloor = new THREE.Mesh(new THREE.BoxGeometry(LENGTH - 2 * WALL_T, 0.05, DEPTH - 2 * WALL_T), floorMat);
+groundFloor.position.set(LENGTH / 2, -0.005, half); // top sits slightly above y=0 so it doesn't z-fight the ground plane
+houseGroup.add(groundFloor);
+
 // --- interior partition walls (thinner, lighter, shorter drag range) ---
 const INT_T = 0.1;
 const INT_H = 2.4;
@@ -354,17 +362,66 @@ function furn(w, h, d, x, y, z, color) {
   return mesh;
 }
 
-// living / kitchen (x 0-6.7, z 0-8.28)
-furn(2.0, 0.4, 0.6, 2.0, 0.2, 0.7, 0x6b8f8a);     // sofa seat
-furn(2.0, 0.5, 0.15, 2.0, 0.65, 0.375, 0x5c7d78);  // sofa backrest
-furn(0.9, 0.35, 0.5, 2.0, 0.175, 1.7, 0x9c7a52);   // coffee table
-furn(1.6, 0.08, 0.9, 5.3, 0.75, 2.5, 0x9c7a52);    // dining table
-furn(0.4, 0.4, 0.4, 4.6, 0.2, 1.9, 0x7a5c46);      // chair
-furn(0.4, 0.4, 0.4, 6.0, 0.2, 1.9, 0x7a5c46);      // chair
-furn(0.4, 0.4, 0.4, 4.6, 0.2, 3.1, 0x7a5c46);      // chair
-furn(0.4, 0.4, 0.4, 6.0, 0.2, 3.1, 0x7a5c46);      // chair
-furn(1.8, 0.9, 0.6, 1.3, 0.45, 7.9, 0xd8d2c4);     // kitchen counter
-furn(0.5, 0.05, 0.5, 1.3, 0.925, 7.9, 0x333333);   // stove top
+// A local group so furniture with several parts (legs, backrests) can be
+// built in its own coordinate space and placed/rotated as one unit.
+function furnGroup(x, y, z, rotY) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  g.rotation.y = rotY || 0;
+  houseGroup.add(g);
+  return g;
+}
+function box(parent, w, h, d, x, y, z, color) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color, flatShading: true }));
+  mesh.position.set(x, y, z);
+  parent.add(mesh);
+  return mesh;
+}
+
+const LEG = 0x4a3826;
+
+function chair(x, y, z, rotY, color) {
+  const g = furnGroup(x, y, z, rotY);
+  const seatH = 0.45;
+  box(g, 0.4, 0.04, 0.4, 0, seatH, 0, color);
+  [[-0.16, -0.16], [0.16, -0.16], [-0.16, 0.16], [0.16, 0.16]].forEach(([dx, dz]) => {
+    box(g, 0.04, seatH, 0.04, dx, seatH / 2, dz, LEG);
+  });
+  box(g, 0.4, 0.42, 0.04, 0, seatH + 0.21, -0.18, color);
+  return g;
+}
+
+function tableWithLegs(w, h, d, x, y, z, color) {
+  const g = furnGroup(x, 0, z, 0);
+  box(g, w, 0.05, d, 0, y, 0, color);
+  const insetW = w / 2 - 0.08, insetD = d / 2 - 0.08;
+  [[-insetW, -insetD], [insetW, -insetD], [-insetW, insetD], [insetW, insetD]].forEach(([dx, dz]) => {
+    box(g, 0.06, y - 0.025, 0.06, dx, (y - 0.025) / 2, dz, LEG);
+  });
+  return g;
+}
+
+// living / kitchen (x 0-6.7, z 0-8.28) — laid out per the real floor
+// plan: a seating nook in the window corner, kitchen run along the
+// gable wall, dining table nearer the window wall.
+furn(1.9, 0.4, 0.9, 2.2, 0.2, 1.2, 0x6b8f8a);      // sofa seat
+furn(1.9, 0.5, 0.15, 2.2, 0.65, 0.68, 0x5c7d78);   // sofa backrest
+furn(0.9, 0.42, 0.5, 2.2, 0.21, 0.5, 0x5c7d78);    // sofa armrest side
+chair(1.0, 0, 2.2, Math.PI * 0.15, 0x6b8f8a);      // accent armchair
+furn(0.9, 0.35, 0.5, 2.2, 0.175, 2.1, 0x9c7a52);   // coffee table
+furn(3.0, 0.02, 2.0, 2.1, 0.02, 1.4, 0x8f7a5c);    // rug
+
+const diningX = 5.2; // keep clear of the x=6.7 wall into bedroom 1
+tableWithLegs(1.6, 0.75, 1.0, diningX, 0.75, 1.3, 0x9c7a52); // dining table
+[-0.6, 0, 0.6].forEach((dx) => chair(diningX + dx, 0, 0.55, Math.PI, 0x7a5c46));
+[-0.6, 0, 0.6].forEach((dx) => chair(diningX + dx, 0, 2.05, 0, 0x7a5c46));
+
+// kitchen run along the gable wall, sink + stove + a tall fridge
+furn(0.6, 0.9, 4.2, 0.5, 0.45, 5.4, 0xd8d2c4);     // counter run
+furn(0.5, 0.9, 1.2, 0.5, 0.45, 7.7, 0xd8d2c4);     // counter return
+furn(0.42, 0.05, 0.42, 0.55, 0.92, 4.2, 0x8fa6a6); // sink basin
+furn(0.5, 0.05, 0.5, 0.55, 0.92, 6.5, 0x333333);   // stove top
+furn(0.65, 1.8, 0.65, 0.65, 0.9, 7.9, 0xe8e2d5);   // fridge
 
 // bedrooms (3 cells across x 6.7-17.916, z 0-3.0)
 const bedCenters = [8.57, 12.31, 16.05];
@@ -434,7 +491,8 @@ loftWallZ(6.0, 13.0, 17.2);  // hems room back knee-wall
 loftWallX(17.2, 2.3, 6.0);   // hems room end knee-wall (near the gable window)
 loftWallX(15.1, 2.3, 6.0);   // internal divider (room | nook)
 furn(1.3, 0.3, 1.8, 16.1, LOFT_Y + 0.15, 4.1, 0xc9a6db);  // loft bed
-furn(0.5, 0.5, 0.5, 14.0, LOFT_Y + 0.25, 4.6, 0x7a5c46);  // reading chair
+furn(1.3, 0.6, 0.1, 16.1, LOFT_Y + 0.45, 3.25, 0x9c7a52); // loft headboard
+chair(14.0, LOFT_Y, 4.6, Math.PI * 0.8, 0x7a5c46);        // reading chair
 furn(0.4, 0.35, 0.4, 14.0, LOFT_Y + 0.175, 3.7, 0x9c7a52); // side table
 
 // --- roof: two hinged panels meeting at the ridge ---
