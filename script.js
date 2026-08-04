@@ -593,8 +593,18 @@ walkBtn.addEventListener("click", () => {
   if (fpsMode) exitFPS(); else enterFPS();
 });
 
+// Only treat "lock lost" as an exit if we actually had the lock before -
+// a failed lock *request* (blocked, or transient browser refusal) also
+// fires this event with a null element, and shouldn't kick the player
+// straight back out of walk mode (keyboard movement still works either way).
+let hadPointerLock = false;
 document.addEventListener("pointerlockchange", () => {
-  if (!document.pointerLockElement && fpsMode) exitFPS();
+  if (document.pointerLockElement) {
+    hadPointerLock = true;
+  } else if (hadPointerLock && fpsMode) {
+    hadPointerLock = false;
+    exitFPS();
+  }
 });
 
 window.addEventListener("keydown", (e) => {
