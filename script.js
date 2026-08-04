@@ -41,21 +41,67 @@ const houseGroup = new THREE.Group();
 houseGroup.position.set(-LENGTH / 2, 0, -half);
 scene.add(houseGroup);
 
-const woodMat = new THREE.MeshStandardMaterial({ color: 0xcbb994, flatShading: true });
-const roofMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, flatShading: true, side: THREE.DoubleSide });
+// --- procedural textures (no external image files needed) ---
+function makeStripeTexture(colorA, colorB, stripes) {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = colorA;
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = colorB;
+  const stripeW = size / stripes;
+  for (let i = 0; i < stripes; i += 2) ctx.fillRect(i * stripeW, 0, stripeW, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+// Clones a base striped texture with a repeat tuned so the stripe (board)
+// width comes out consistent in real-world meters regardless of mesh size.
+function boardMat(baseTexture, widthM, heightM, boardWidth) {
+  const tex = baseTexture.clone();
+  tex.needsUpdate = true;
+  tex.repeat.set(widthM / boardWidth, heightM / boardWidth);
+  return new THREE.MeshStandardMaterial({ map: tex, flatShading: true });
+}
+
+const sidingTex = makeStripeTexture("#cbb994", "#bda87d", 16); // vertical wood cladding
+const roofTex = makeStripeTexture("#4a4a4a", "#3c3c3c", 28);   // ribbed roofing panels
+const panelTex = makeStripeTexture("#f0ead9", "#e6ddc8", 20);  // faint interior paneling
+
+const roofMat = boardMat(roofTex, 1, 1, 0.18);
+roofMat.side = THREE.DoubleSide;
 const windowMat = new THREE.MeshStandardMaterial({ color: 0x9fd3e8, transparent: true, opacity: 0.75 });
 const doorMat = new THREE.MeshStandardMaterial({ color: 0x5b3a29 });
-const interiorMat = new THREE.MeshStandardMaterial({ color: 0xf0ead9, flatShading: true });
+const trimMat = new THREE.MeshStandardMaterial({ color: 0x33261c, flatShading: true });
+const interiorMat = boardMat(panelTex, 3, 2.4, 0.5);
+
+// Wood-siding materials, one per wall category so board width stays
+// consistent in meters even though each mesh has different UV extents.
+const woodMatLong = boardMat(sidingTex, LENGTH, EAVE, 0.22);
+const woodMatGable = boardMat(sidingTex, DEPTH, EAVE, 0.22);
+const woodMatPediment = boardMat(sidingTex, DEPTH, RIDGE - EAVE, 0.22);
 
 const draggableWalls = [];
 const staticColliders = []; // non-draggable solid boxes (house-local space), e.g. loft knee-walls
 
 const POKE = WALL_T + 0.05; // thicker than the wall so cutouts poke through both faces
 
+const TRIM = 0.1; // frame width around windows/doors
+
 function addWindow(parent, x, y, z, w, h, axis) {
+  const frameGeo = axis === "x"
+    ? new THREE.BoxGeometry(POKE, h + TRIM * 2, w + TRIM * 2)
+    : new THREE.BoxGeometry(w + TRIM * 2, h + TRIM * 2, POKE);
+  const frame = new THREE.Mesh(frameGeo, trimMat);
+  frame.position.set(x, y, z);
+  parent.add(frame);
+
   const geo = axis === "x"
-    ? new THREE.BoxGeometry(POKE, h, w)
-    : new THREE.BoxGeometry(w, h, POKE);
+    ? new THREE.BoxGeometry(POKE + 0.03, h, w)
+    : new THREE.BoxGeometry(w, h, POKE + 0.03);
   const win = new THREE.Mesh(geo, windowMat);
   win.position.set(x, y, z);
   parent.add(win);
@@ -80,14 +126,21 @@ const doors = [];
 // A door that pivots open around a vertical hinge at one edge, and carves
 // a passable gap into its wall's collision boxes while open.
 function addDoorHinged(parent, cx, y, cz, w, h, axis) {
+  const frameGeo = axis === "x"
+    ? new THREE.BoxGeometry(POKE, h + TRIM * 2, w + TRIM * 2)
+    : new THREE.BoxGeometry(w + TRIM * 2, h + TRIM * 2, POKE);
+  const frame = new THREE.Mesh(frameGeo, trimMat);
+  frame.position.set(cx, y, cz);
+  parent.add(frame);
+
   const pivot = new THREE.Group();
   let doorLocalX = 0, doorLocalZ = 0, geo;
   if (axis === "x") {
-    geo = new THREE.BoxGeometry(POKE, h, w);
+    geo = new THREE.BoxGeometry(POKE + 0.03, h, w);
     pivot.position.set(cx, y, cz - w / 2);
     doorLocalZ = w / 2;
   } else {
-    geo = new THREE.BoxGeometry(w, h, POKE);
+    geo = new THREE.BoxGeometry(w, h, POKE + 0.03);
     pivot.position.set(cx - w / 2, y, cz);
     doorLocalX = w / 2;
   }
@@ -128,16 +181,20 @@ function makeGablePrism() {
     0, 2, 5, 0, 5, 3, // slope 1 (z=0 side)
     2, 1, 4, 2, 4, 5  // slope 2 (z=DEPTH side)
   ];
+  // UVs so the siding texture continues at roughly the same board width
+  // as the wall below it (u = depth fraction, v = height fraction).
+  const uvs = [0, 0, 1, 0, 0.5, 1, 0, 0, 1, 0, 0.5, 1];
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(idx);
   geo.computeVertexNormals();
-  return new THREE.Mesh(geo, woodMat);
+  return new THREE.Mesh(geo, woodMatPediment);
 }
 
 function makeGableWall(xPos, outwardSign) {
   const group = new THREE.Group();
-  const lower = new THREE.Mesh(new THREE.BoxGeometry(WALL_T, EAVE, DEPTH), woodMat);
+  const lower = new THREE.Mesh(new THREE.BoxGeometry(WALL_T, EAVE, DEPTH), woodMatGable);
   lower.position.set(WALL_T / 2, EAVE / 2, half);
   group.add(lower);
   const prism = makeGablePrism();
@@ -156,7 +213,7 @@ function makeGableWall(xPos, outwardSign) {
 
 function makeLongWall(zPos, outwardSign) {
   const group = new THREE.Group();
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(LENGTH, EAVE, WALL_T), woodMat);
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(LENGTH, EAVE, WALL_T), woodMatLong);
   wall.position.set(LENGTH / 2, EAVE / 2, 0);
   group.add(wall);
   group.position.z = zPos;
@@ -180,9 +237,16 @@ const wallEast = makeLongWall(DEPTH - WALL_T, 1);
 const INT_T = 0.1;
 const INT_H = 2.4;
 
+// Pulls an endpoint back to the exterior wall's *inner* face (plus a hair
+// more) instead of the outer wall line, so it can't poke into or past the
+// exterior wall's own thickness and show through from outside.
+const WALL_EPS = WALL_T + 0.02;
+
 function makeInteriorWallX(xPos, z0, z1, gaps = []) {
   const group = new THREE.Group();
-  const ranges = subtractGaps(z0, z1, gaps);
+  const zStart = z0 <= 0 ? WALL_EPS : z0;
+  const zEnd = z1 >= DEPTH ? DEPTH - WALL_EPS : z1;
+  const ranges = subtractGaps(zStart, zEnd, gaps);
   ranges.forEach(([a, b]) => {
     const len = b - a;
     const wall = new THREE.Mesh(new THREE.BoxGeometry(INT_T, INT_H, len), interiorMat);
@@ -204,7 +268,9 @@ function makeInteriorWallX(xPos, z0, z1, gaps = []) {
 
 function makeInteriorWallZ(zPos, x0, x1, gaps = []) {
   const group = new THREE.Group();
-  const ranges = subtractGaps(x0, x1, gaps);
+  const xStart = x0 <= 0 ? WALL_EPS : x0;
+  const xEnd = x1 >= LENGTH ? LENGTH - WALL_EPS : x1;
+  const ranges = subtractGaps(xStart, xEnd, gaps);
   ranges.forEach(([a, b]) => {
     const len = b - a;
     const wall = new THREE.Mesh(new THREE.BoxGeometry(len, INT_H, INT_T), interiorMat);
@@ -249,9 +315,9 @@ addWindow(wallWest, 8.5, 1.7, 0, 1.6, 1.6, "z");
 addWindow(wallWest, 11, 1.7, 0, 1.8, 1.8, "z");
 addWindow(wallWest, 14, 1.7, 0, 1.8, 1.8, "z");
 
-addDoorHinged(wallEast, 3.2, 1.05, 0, 1.6, 2.1, "z");
-addWindow(wallEast, 1.2, 1.6, 0, 0.9, 1.0, "z");
-addWindow(wallEast, 6, 1.6, 0, 0.9, 1.0, "z");
+addDoorHinged(wallEast, 10.6, 1.05, 0, 1.6, 2.1, "z");
+addWindow(wallEast, 8.7, 1.6, 0, 1.3, 1.1, "z");
+addWindow(wallEast, 12.7, 1.6, 0, 1.3, 1.1, "z");
 
 addDoorHinged(gableSouth, 0, 1.05, 3.5, 1.6, 2.1, "x");
 addWindow(gableSouth, 0, 1.6, 5.5, 1.4, 1.4, "x");
@@ -260,6 +326,22 @@ addWindow(gableSouth, 0, 1.6, 1.5, 1.0, 1.0, "x");
 addWindow(gableNorth, 0, 1.5, 2, 1.0, 1.6, "x");
 addWindow(gableNorth, 0, 1.5, 6, 1.0, 1.6, "x");
 addWindow(gableNorth, 0, RIDGE - 0.9, half, 1.2, 1.2, "x");
+
+// covered entry: the real perspective drawing shows the east roof simply
+// overhanging further out above the door, held up on a single post
+const canopyDepth = 1.6;
+const canopyPivot = new THREE.Group();
+canopyPivot.position.set(10.6, EAVE, DEPTH);
+canopyPivot.rotation.x = pitch;
+houseGroup.add(canopyPivot);
+const canopyPanel = new THREE.Mesh(new THREE.BoxGeometry(3.0, ROOF_T, canopyDepth), roofMat);
+canopyPanel.position.set(0, 0, canopyDepth / 2);
+canopyPivot.add(canopyPanel);
+
+const postH = EAVE - canopyDepth * Math.tan(pitch) - 0.1;
+const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, postH, 8), woodMatLong);
+post.position.set(10.6, postH / 2, DEPTH + canopyDepth - 0.2);
+houseGroup.add(post);
 
 // --- furniture (simple low-poly boxes, matching the toy-house look) ---
 function furn(w, h, d, x, y, z, color) {
