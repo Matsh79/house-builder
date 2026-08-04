@@ -497,6 +497,9 @@ const EYE_HEIGHT = 1.6;
 const PLAYER_R = 0.25;
 const MOVE_SPEED = 3.2;
 const DOOR_REACH = 2.2;
+const DEFAULT_FOV = 50;
+const WALK_FOV = 140;
+const WALK_START_PITCH = THREE.MathUtils.degToRad(-30);
 const defaultOrbitPos = new THREE.Vector3(18, 11, 22);
 const defaultOrbitTarget = new THREE.Vector3(0, EAVE, 0);
 const defaultHint = "Drag a wall to pull it out. Drag to orbit, scroll to zoom.";
@@ -573,6 +576,9 @@ function enterFPS() {
   walkBtn.textContent = "Leave Walk Mode";
   hudHint.textContent = walkHint;
   crosshair.style.display = "block";
+  camera.fov = WALK_FOV;
+  camera.updateProjectionMatrix();
+  camPitch = WALK_START_PITCH;
   renderer.domElement.requestPointerLock();
 }
 
@@ -584,6 +590,8 @@ function exitFPS() {
   crosshair.style.display = "none";
   doorHint.style.display = "none";
   if (document.pointerLockElement) document.exitPointerLock();
+  camera.fov = DEFAULT_FOV;
+  camera.updateProjectionMatrix();
   camera.rotation.order = "XYZ";
   camera.position.copy(defaultOrbitPos);
   controls.target.copy(defaultOrbitTarget);
