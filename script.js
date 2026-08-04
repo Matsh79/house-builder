@@ -48,6 +48,7 @@ const doorMat = new THREE.MeshStandardMaterial({ color: 0x5b3a29 });
 const interiorMat = new THREE.MeshStandardMaterial({ color: 0xf0ead9, flatShading: true });
 
 const draggableWalls = [];
+const staticColliders = []; // non-draggable solid boxes (house-local space), e.g. loft knee-walls
 
 const POKE = WALL_T + 0.05; // thicker than the wall so cutouts poke through both faces
 
@@ -60,13 +61,59 @@ function addWindow(parent, x, y, z, w, h, axis) {
   parent.add(win);
 }
 
-function addDoor(parent, x, y, z, w, h, axis) {
-  const geo = axis === "x"
-    ? new THREE.BoxGeometry(POKE, h, w)
-    : new THREE.BoxGeometry(w, h, POKE);
+// Splits [start,end] into the sub-ranges left over after removing each
+// [a,b] gap. Used both for interior-wall doorways and for door cutouts.
+function subtractGaps(start, end, gaps) {
+  const sorted = gaps.slice().sort((a, b) => a[0] - b[0]);
+  const out = [];
+  let cursor = start;
+  sorted.forEach(([a, b]) => {
+    if (a > cursor) out.push([cursor, a]);
+    cursor = Math.max(cursor, b);
+  });
+  if (cursor < end) out.push([cursor, end]);
+  return out;
+}
+
+const doors = [];
+
+// A door that pivots open around a vertical hinge at one edge, and carves
+// a passable gap into its wall's collision boxes while open.
+function addDoorHinged(parent, cx, y, cz, w, h, axis) {
+  const pivot = new THREE.Group();
+  let doorLocalX = 0, doorLocalZ = 0, geo;
+  if (axis === "x") {
+    geo = new THREE.BoxGeometry(POKE, h, w);
+    pivot.position.set(cx, y, cz - w / 2);
+    doorLocalZ = w / 2;
+  } else {
+    geo = new THREE.BoxGeometry(w, h, POKE);
+    pivot.position.set(cx - w / 2, y, cz);
+    doorLocalX = w / 2;
+  }
+  parent.add(pivot);
   const door = new THREE.Mesh(geo, doorMat);
-  door.position.set(x, y, z);
-  parent.add(door);
+  door.position.set(doorLocalX, 0, doorLocalZ);
+  pivot.add(door);
+
+  const base = parent.userData.localBoxes[0];
+  const gapA = axis === "x" ? cz - w / 2 : cx - w / 2;
+  const gapB = axis === "x" ? cz + w / 2 : cx + w / 2;
+  const openBoxes = (axis === "x"
+    ? subtractGaps(base.min.z, base.max.z, [[gapA, gapB]])
+    : subtractGaps(base.min.x, base.max.x, [[gapA, gapB]])
+  ).map(([a, b]) => axis === "x"
+    ? new THREE.Box3(new THREE.Vector3(base.min.x, base.min.y, a), new THREE.Vector3(base.max.x, base.max.y, b))
+    : new THREE.Box3(new THREE.Vector3(a, base.min.y, base.min.z), new THREE.Vector3(b, base.max.y, base.max.z))
+  );
+
+  const rec = {
+    pivot, wallGroup: parent, openBoxes,
+    closedRot: 0, openRot: Math.PI / 2, isOpen: false,
+    worldPos: new THREE.Vector3(),
+  };
+  doors.push(rec);
+  return rec;
 }
 
 // Gable prism: triangular pediment above eave height, built directly so
@@ -102,6 +149,7 @@ function makeGableWall(xPos, outwardSign) {
   group.userData.centerY = EAVE / 2;
   group.userData.dragMin = -0.3;
   group.userData.dragMax = 1.5;
+  group.userData.localBoxes = [new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(WALL_T, RIDGE, DEPTH))];
   draggableWalls.push(group);
   return group;
 }
@@ -118,6 +166,7 @@ function makeLongWall(zPos, outwardSign) {
   group.userData.centerY = EAVE / 2;
   group.userData.dragMin = -0.3;
   group.userData.dragMax = 1.5;
+  group.userData.localBoxes = [new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(LENGTH, EAVE, WALL_T))];
   draggableWalls.push(group);
   return group;
 }
@@ -131,12 +180,15 @@ const wallEast = makeLongWall(DEPTH - WALL_T, 1);
 const INT_T = 0.1;
 const INT_H = 2.4;
 
-function makeInteriorWallX(xPos, z0, z1) {
-  const len = z1 - z0;
+function makeInteriorWallX(xPos, z0, z1, gaps = []) {
   const group = new THREE.Group();
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(INT_T, INT_H, len), interiorMat);
-  wall.position.set(0, INT_H / 2, z0 + len / 2);
-  group.add(wall);
+  const ranges = subtractGaps(z0, z1, gaps);
+  ranges.forEach(([a, b]) => {
+    const len = b - a;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(INT_T, INT_H, len), interiorMat);
+    wall.position.set(0, INT_H / 2, a + len / 2);
+    group.add(wall);
+  });
   group.position.x = xPos;
   houseGroup.add(group);
   group.userData.restPosition = group.position.clone();
@@ -144,16 +196,21 @@ function makeInteriorWallX(xPos, z0, z1) {
   group.userData.centerY = INT_H / 2;
   group.userData.dragMin = -0.6;
   group.userData.dragMax = 0.6;
+  group.userData.localBoxes = ranges.map(([a, b]) =>
+    new THREE.Box3(new THREE.Vector3(0, 0, a), new THREE.Vector3(INT_T, INT_H, b)));
   draggableWalls.push(group);
   return group;
 }
 
-function makeInteriorWallZ(zPos, x0, x1) {
-  const len = x1 - x0;
+function makeInteriorWallZ(zPos, x0, x1, gaps = []) {
   const group = new THREE.Group();
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(len, INT_H, INT_T), interiorMat);
-  wall.position.set(x0 + len / 2, INT_H / 2, 0);
-  group.add(wall);
+  const ranges = subtractGaps(x0, x1, gaps);
+  ranges.forEach(([a, b]) => {
+    const len = b - a;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(len, INT_H, INT_T), interiorMat);
+    wall.position.set(a + len / 2, INT_H / 2, 0);
+    group.add(wall);
+  });
   group.position.z = zPos;
   houseGroup.add(group);
   group.userData.restPosition = group.position.clone();
@@ -161,23 +218,26 @@ function makeInteriorWallZ(zPos, x0, x1) {
   group.userData.centerY = INT_H / 2;
   group.userData.dragMin = -0.6;
   group.userData.dragMax = 0.6;
+  group.userData.localBoxes = ranges.map(([a, b]) =>
+    new THREE.Box3(new THREE.Vector3(a, 0, 0), new THREE.Vector3(b, INT_H, INT_T)));
   draggableWalls.push(group);
   return group;
 }
 
 // Layout approximates the real floor plan: living/kitchen open on one end,
 // 3 bedrooms across the top of the other end, hallway/entry/bath/laundry/sauna below.
-makeInteriorWallX(6.7, 0, DEPTH);        // living/kitchen | rest of house
-makeInteriorWallX(10.439, 0, 3.0);       // bedroom 1 | bedroom 2
-makeInteriorWallX(14.178, 0, 3.0);       // bedroom 2 | bedroom 3
-makeInteriorWallZ(3.0, 6.7, LENGTH);     // bedrooms | hallway
-makeInteriorWallZ(4.5, 6.7, LENGTH);     // hallway | entry/bath/laundry wing
-makeInteriorWallX(9.2, 4.5, DEPTH);      // entry | bathroom 1
-makeInteriorWallZ(6.0, 9.2, 13.3);       // entry | bathrooms (upper edge)
-makeInteriorWallX(11.0, 6.0, DEPTH);     // bathroom 1 | bathroom 2
-makeInteriorWallX(13.3, 4.5, DEPTH);     // bathroom 2 | laundry/sauna
-makeInteriorWallX(15.5, 4.5, 6.0);       // laundry | sauna
-makeInteriorWallZ(6.0, 15.5, LENGTH);    // sauna | laundry (lower edge)
+// Gaps are walk-through doorways connecting each room to the next.
+makeInteriorWallX(6.7, 0, DEPTH, [[3.3, 4.2]]);                      // living/kitchen | rest of house
+makeInteriorWallX(10.439, 0, 3.0);                                   // bedroom 1 | bedroom 2
+makeInteriorWallX(14.178, 0, 3.0);                                   // bedroom 2 | bedroom 3
+makeInteriorWallZ(3.0, 6.7, LENGTH, [[8.1, 9.0], [11.85, 12.75], [15.6, 16.5]]); // bedrooms | hallway
+makeInteriorWallZ(4.5, 6.7, LENGTH, [[7.5, 8.4]]);                   // hallway | entry/bath/laundry wing
+makeInteriorWallX(9.2, 4.5, DEPTH, [[5.0, 5.8]]);                    // entry | entry-extension/bathrooms
+makeInteriorWallZ(6.0, 9.2, 13.3, [[9.9, 10.7]]);                    // entry-extension | bathroom 1
+makeInteriorWallX(11.0, 6.0, DEPTH, [[6.8, 7.6]]);                   // bathroom 1 | bathroom 2
+makeInteriorWallX(13.3, 4.5, DEPTH, [[4.9, 5.7]]);                   // bathroom 2/entry-ext | laundry
+makeInteriorWallX(15.5, 4.5, 6.0, [[4.9, 5.6]]);                     // laundry | sauna
+makeInteriorWallZ(6.0, 15.5, LENGTH);                                // sauna | laundry (lower edge)
 
 // windows/doors (approximate, matching the facade drawings)
 // parented to the wall GROUP (not the mesh) so coordinates are in the
@@ -189,11 +249,11 @@ addWindow(wallWest, 8.5, 1.7, 0, 1.6, 1.6, "z");
 addWindow(wallWest, 11, 1.7, 0, 1.8, 1.8, "z");
 addWindow(wallWest, 14, 1.7, 0, 1.8, 1.8, "z");
 
-addDoor(wallEast, 3.2, 1.05, 0, 1.6, 2.1, "z");
+addDoorHinged(wallEast, 3.2, 1.05, 0, 1.6, 2.1, "z");
 addWindow(wallEast, 1.2, 1.6, 0, 0.9, 1.0, "z");
 addWindow(wallEast, 6, 1.6, 0, 0.9, 1.0, "z");
 
-addDoor(gableSouth, 0, 1.05, 3.5, 1.6, 2.1, "x");
+addDoorHinged(gableSouth, 0, 1.05, 3.5, 1.6, 2.1, "x");
 addWindow(gableSouth, 0, 1.6, 5.5, 1.4, 1.4, "x");
 addWindow(gableSouth, 0, 1.6, 1.5, 1.0, 1.0, "x");
 
@@ -275,9 +335,17 @@ furn(17.7 - 9.4, 0.1, 7.98 - 0.3, (9.4 + 17.7) / 2, LOFT_Y - 0.05, (0.3 + 7.98) 
 // enclosed hems room + a reading nook, matching the small room on the real plan
 function loftWallX(xPos, z0, z1) {
   furn(INT_T, HEMS_H, z1 - z0, xPos, LOFT_Y + HEMS_H / 2, (z0 + z1) / 2, 0xf0ead9);
+  staticColliders.push(new THREE.Box3(
+    new THREE.Vector3(xPos - INT_T / 2, LOFT_Y, z0),
+    new THREE.Vector3(xPos + INT_T / 2, LOFT_Y + HEMS_H, z1)
+  ));
 }
 function loftWallZ(zPos, x0, x1) {
   furn(x1 - x0, HEMS_H, INT_T, (x0 + x1) / 2, LOFT_Y + HEMS_H / 2, zPos, 0xf0ead9);
+  staticColliders.push(new THREE.Box3(
+    new THREE.Vector3(x0, LOFT_Y, zPos - INT_T / 2),
+    new THREE.Vector3(x1, LOFT_Y + HEMS_H, zPos + INT_T / 2)
+  ));
 }
 loftWallZ(2.3, 13.0, 17.2);  // hems room front knee-wall
 loftWallZ(6.0, 13.0, 17.2);  // hems room back knee-wall
@@ -327,13 +395,14 @@ function setPointerNDC(e) {
 
 const wallMeshes = [];
 draggableWalls.forEach(w => w.children.forEach(c => {
-  if (c.geometry.type === "BoxGeometry" || c.geometry.type === "BufferGeometry") {
+  if (c.isMesh) {
     c.userData.wallRoot = w;
     wallMeshes.push(c);
   }
 }));
 
 renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (fpsMode) return;
   setPointerNDC(e);
   raycaster.setFromCamera(pointerNDC, camera);
   const hits = raycaster.intersectObjects(wallMeshes, false);
@@ -423,12 +492,167 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// --- first-person walk mode ---
+const EYE_HEIGHT = 1.6;
+const PLAYER_R = 0.25;
+const MOVE_SPEED = 3.2;
+const DOOR_REACH = 2.2;
+const defaultOrbitPos = new THREE.Vector3(18, 11, 22);
+const defaultOrbitTarget = new THREE.Vector3(0, EAVE, 0);
+const defaultHint = "Drag a wall to pull it out. Drag to orbit, scroll to zoom.";
+const walkHint = "WASD to move, mouse to look, E to open doors, Esc to leave.";
+
+let fpsMode = false;
+let playerPos = new THREE.Vector3(3, 0, 4); // starts in the living room, house-local coords
+let playerFeetY = 0;
+let yaw = Math.PI, camPitch = 0;
+const keys = {};
+const clock = new THREE.Clock();
+
+const walkBtn = document.getElementById("walkBtn");
+const hudHint = document.querySelector("#hud .hint");
+const crosshair = document.getElementById("crosshair");
+const doorHint = document.getElementById("doorHint");
+
+function getCollidableBoxes() {
+  const boxes = staticColliders.slice();
+  draggableWalls.forEach(w => {
+    const door = doors.find(d => d.wallGroup === w);
+    const localBoxes = door && door.isOpen ? door.openBoxes : w.userData.localBoxes;
+    localBoxes.forEach(b => boxes.push(b.clone().translate(w.position)));
+  });
+  return boxes;
+}
+
+function collides(x, z, feetY) {
+  const px0 = x - PLAYER_R, px1 = x + PLAYER_R;
+  const pz0 = z - PLAYER_R, pz1 = z + PLAYER_R;
+  const boxes = getCollidableBoxes();
+  for (const box of boxes) {
+    if (feetY < box.min.y - 0.05 || feetY > box.max.y + 0.05) continue;
+    if (px1 > box.min.x && px0 < box.max.x && pz1 > box.min.z && pz0 < box.max.z) return true;
+  }
+  return false;
+}
+
+function updatePlayerFeetY() {
+  const inStairX = playerPos.x >= STAIR_X0 && playerPos.x <= STAIR_X0 + STAIR_RUN;
+  const inStairZ = Math.abs(playerPos.z - STAIR_Z) <= STAIR_W / 2;
+  if (inStairX && inStairZ) {
+    const t = (playerPos.x - STAIR_X0) / STAIR_RUN;
+    playerFeetY = THREE.MathUtils.clamp(t, 0, 1) * LOFT_Y;
+  } else {
+    playerFeetY = playerFeetY > LOFT_Y / 2 ? LOFT_Y : 0;
+  }
+}
+
+function tryMove(dx, dz) {
+  const newX = playerPos.x + dx;
+  if (!collides(newX, playerPos.z, playerFeetY)) playerPos.x = newX;
+  const newZ = playerPos.z + dz;
+  if (!collides(playerPos.x, newZ, playerFeetY)) playerPos.z = newZ;
+}
+
+function nearestDoor() {
+  const eyePos = camera.position;
+  let closest = null, closestDist = DOOR_REACH;
+  doors.forEach(d => {
+    d.pivot.getWorldPosition(d.worldPos);
+    const dist = d.worldPos.distanceTo(eyePos);
+    if (dist < closestDist) {
+      closestDist = dist;
+      closest = d;
+    }
+  });
+  return closest;
+}
+
+function enterFPS() {
+  fpsMode = true;
+  controls.enabled = false;
+  walkBtn.textContent = "Leave Walk Mode";
+  hudHint.textContent = walkHint;
+  crosshair.style.display = "block";
+  renderer.domElement.requestPointerLock();
+}
+
+function exitFPS() {
+  fpsMode = false;
+  controls.enabled = true;
+  walkBtn.textContent = "Walk Inside";
+  hudHint.textContent = defaultHint;
+  crosshair.style.display = "none";
+  doorHint.style.display = "none";
+  if (document.pointerLockElement) document.exitPointerLock();
+  camera.rotation.order = "XYZ";
+  camera.position.copy(defaultOrbitPos);
+  controls.target.copy(defaultOrbitTarget);
+}
+
+walkBtn.addEventListener("click", () => {
+  if (fpsMode) exitFPS(); else enterFPS();
+});
+
+document.addEventListener("pointerlockchange", () => {
+  if (!document.pointerLockElement && fpsMode) exitFPS();
+});
+
+window.addEventListener("keydown", (e) => {
+  keys[e.code] = true;
+  if (fpsMode && e.code === "KeyE") {
+    const d = nearestDoor();
+    if (d) d.isOpen = !d.isOpen;
+  }
+});
+window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+document.addEventListener("mousemove", (e) => {
+  if (!fpsMode || !document.pointerLockElement) return;
+  yaw -= e.movementX * 0.0022;
+  camPitch = THREE.MathUtils.clamp(camPitch - e.movementY * 0.0022, -1.3, 1.3);
+});
+
+function updateFPS(dt) {
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+  const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+  let dx = 0, dz = 0;
+  if (keys.KeyW) { dx += fx; dz += fz; }
+  if (keys.KeyS) { dx -= fx; dz -= fz; }
+  if (keys.KeyD) { dx += rx; dz += rz; }
+  if (keys.KeyA) { dx -= rx; dz -= rz; }
+  const len = Math.hypot(dx, dz);
+  if (len > 0.001) {
+    tryMove((dx / len) * MOVE_SPEED * dt, (dz / len) * MOVE_SPEED * dt);
+  }
+  updatePlayerFeetY();
+
+  camera.rotation.order = "YXZ";
+  camera.rotation.y = yaw;
+  camera.rotation.x = camPitch;
+  camera.position.set(
+    playerPos.x + houseGroup.position.x,
+    playerFeetY + EYE_HEIGHT,
+    playerPos.z + houseGroup.position.z
+  );
+
+  const d = nearestDoor();
+  doorHint.style.display = d ? "block" : "none";
+}
+
 function animate() {
   requestAnimationFrame(animate);
+  const dt = clock.getDelta();
   const t = 0.08;
   pivotWest.rotation.x = THREE.MathUtils.lerp(pivotWest.rotation.x, roofOpen ? OPEN_WEST : CLOSED_WEST, t);
   pivotEast.rotation.x = THREE.MathUtils.lerp(pivotEast.rotation.x, roofOpen ? OPEN_EAST : CLOSED_EAST, t);
-  controls.update();
+  doors.forEach(d => {
+    d.pivot.rotation.y = THREE.MathUtils.lerp(d.pivot.rotation.y, d.isOpen ? d.openRot : d.closedRot, 0.15);
+  });
+  if (fpsMode) {
+    updateFPS(dt);
+  } else {
+    controls.update();
+  }
   updateLabels();
   renderer.render(scene, camera);
 }
