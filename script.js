@@ -254,6 +254,39 @@ furn(2.0, 0.8, 0.5, 16.4, 0.4, 7.9, 0xd8d2c4);     // storage counter
 furn(0.5, 0.45, 1.0, 17.5, 0.225, 5.25, 0x9c7a52); // bench
 furn(0.3, 0.4, 0.3, 15.7, 0.2, 4.7, 0x2b2b2b);     // heater
 
+// --- second floor / loft ("hems", from plan A.02) ---
+// The loft floor sits above the bedroom/bathroom wing. Its enclosed room
+// uses short knee-walls (not full height) so they stay under the sloped
+// roof instead of poking through it near the eaves.
+const LOFT_Y = EAVE;
+const HEMS_H = 0.6;
+
+// stairs up from the entry room (10 risers, stacked-block style)
+const STAIR_X0 = 6.85, STAIR_STEPS = 10, STAIR_RUN = 2.3, STAIR_Z = 6.0, STAIR_W = 0.9;
+for (let i = 0; i < STAIR_STEPS; i++) {
+  const stepW = STAIR_RUN / STAIR_STEPS;
+  const h = ((i + 1) / STAIR_STEPS) * LOFT_Y;
+  furn(stepW, h, STAIR_W, STAIR_X0 + stepW * (i + 0.5), h / 2, STAIR_Z, 0x9c7a52);
+}
+
+// loft floor platform (sits right at the eave line, so it never clips the roof)
+furn(17.7 - 9.4, 0.1, 7.98 - 0.3, (9.4 + 17.7) / 2, LOFT_Y - 0.05, (0.3 + 7.98) / 2, 0xdccba3);
+
+// enclosed hems room + a reading nook, matching the small room on the real plan
+function loftWallX(xPos, z0, z1) {
+  furn(INT_T, HEMS_H, z1 - z0, xPos, LOFT_Y + HEMS_H / 2, (z0 + z1) / 2, 0xf0ead9);
+}
+function loftWallZ(zPos, x0, x1) {
+  furn(x1 - x0, HEMS_H, INT_T, (x0 + x1) / 2, LOFT_Y + HEMS_H / 2, zPos, 0xf0ead9);
+}
+loftWallZ(2.3, 13.0, 17.2);  // hems room front knee-wall
+loftWallZ(6.0, 13.0, 17.2);  // hems room back knee-wall
+loftWallX(17.2, 2.3, 6.0);   // hems room end knee-wall (near the gable window)
+loftWallX(15.1, 2.3, 6.0);   // internal divider (room | nook)
+furn(1.3, 0.3, 1.8, 16.1, LOFT_Y + 0.15, 4.1, 0xc9a6db);  // loft bed
+furn(0.5, 0.5, 0.5, 14.0, LOFT_Y + 0.25, 4.6, 0x7a5c46);  // reading chair
+furn(0.4, 0.35, 0.4, 14.0, LOFT_Y + 0.175, 3.7, 0x9c7a52); // side table
+
 // --- roof: two hinged panels meeting at the ridge ---
 const pivotWest = new THREE.Group();
 pivotWest.position.set(LENGTH / 2, RIDGE, half);
